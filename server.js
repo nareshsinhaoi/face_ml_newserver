@@ -11,7 +11,7 @@ const app = express();
 
 // Middleware - Updated CORS configuration
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:8011', "http://192.168.0.186:8080", 'https://uat-photoassets.outlookindia.com', 'http://localhost:3000', 'http://localhost:3010'],
+  origin: ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:8011', "http://192.168.0.186:8080", 'https://face-ml-frontend.onrender.com', 'http://localhost:3000', 'http://localhost:3010'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   credentials: true
 }));
