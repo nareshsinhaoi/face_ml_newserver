@@ -258,7 +258,68 @@ app.post('/api/employees/:id/register-face', auth, upload.single('faceImage'), a
   }
 });
 
-// Face recognition for attendance - Each scan creates a new record
+// Face recognition for attendance - Each scan creates a new record today
+// Face recognition for attendance - Each scan creates a new record with IST timezone
+app.post('/api/attendance/recognize__OLD', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const { faceDescriptor } = req.body;
+    if (!faceDescriptor) return res.status(400).json({ error: 'Face descriptor required' });
+    
+    const [employees] = await connection.query('SELECT * FROM tsk_employees WHERE face_descriptor IS NOT NULL AND is_active = 1');
+    
+    let matched = null;
+    let bestScore = 0;
+    
+    for (const emp of employees) {
+      const desc = JSON.parse(emp.face_descriptor);
+      let score = 0;
+      for (let i = 0; i < desc.length; i++) score += desc[i] * faceDescriptor[i];
+      if (score > 0.6 && score > bestScore) {
+        bestScore = score;
+        matched = emp;
+      }
+    }
+    
+    if (!matched) return res.status(404).json({ error: 'Face not recognized' });
+    
+    // Get current time in IST (UTC+5:30)
+    const istNow = getISTDateTime();
+    const istToday = getISTDateString();
+    
+    // console.log(`IST Time: ${istNow}`);
+    // console.log(`IST Date: ${istToday}`);
+    
+    // Insert new attendance record for each scan with IST time
+    await connection.query(
+      'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
+      [matched.employee_id, matched.name, istToday, istNow]
+    );
+    
+    // Get today's scan count for this employee
+    const [scanCount] = await connection.query(
+      'SELECT COUNT(*) as count FROM tsk_attendance WHERE employee_id = ? AND scan_date = ?',
+      [matched.employee_id, istToday]
+    );
+    
+    res.json({ 
+      success: true,
+      employee: matched,
+      scanTime: istNow,
+      scanDate: istToday,
+      scanCount: scanCount[0].count,
+      timezone: 'IST (UTC+5:30)',
+      message: `Hello ${matched.name}!<br>Scan successfully recorded at ${istNow.toLocaleTimeString()} (IST)<br>#${scanCount[0].count}`
+    });
+    
+  } catch (error) {
+    console.error('Recognition error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
 app.post('/api/attendance/recognize', async (req, res) => {
   const connection = await pool.getConnection();
   try {
@@ -281,7 +342,7 @@ app.post('/api/attendance/recognize', async (req, res) => {
     }
     
     if (!matched) return res.status(404).json({ error: 'Face not recognized' });
-
+    
     // Get current time in IST (UTC+5:30)
     const istNow = getISTDateTime();
     const istToday = getISTDateString();
@@ -295,36 +356,43 @@ app.post('/api/attendance/recognize', async (req, res) => {
       [matched.employee_id, matched.name, istToday, istNow]
     );
     
-    // const now = new Date();
-    // const today = now.toISOString().split('T')[0];
-    
-    // // Insert new attendance record for each scan
-    // await connection.query(
-    //   'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
-    //   [matched.employee_id, matched.name, today, now]
-    // );
-    
     // Get today's scan count for this employee
     const [scanCount] = await connection.query(
       'SELECT COUNT(*) as count FROM tsk_attendance WHERE employee_id = ? AND scan_date = ?',
-      [matched.employee_id, today]
+      [matched.employee_id, istToday]
     );
     
-    // res.json({ 
-    //   success: true,
-    //   employee: matched,
-    //   scanTime: now,
-    //   scanCount: scanCount[0].count,
-    //   message: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${now.toLocaleTimeString()}`
-    // });
+    // Format the time for display (12-hour format with AM/PM)
+    const formattedTime = istNow.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: true 
+    });
+    
+    // Format the date for display (DD-MM-YYYY)
+    const formattedDate = istToday.split('-').reverse().join('-');
+    
+    // Create formatted message with line breaks
+    const formattedMessage = `✅ Hello ${matched.name}!\nYour scan has been recorded successfully.\n\n🕒 Time: ${formattedTime} (IST)\n📅 Date: ${formattedDate}\n🔢 Today's Scan Count: #${scanCount[0].count}`;
+    
     res.json({ 
       success: true,
-      employee: matched,
+      employee: {
+        id: matched.id,
+        employee_id: matched.employee_id,
+        name: matched.name,
+        email: matched.email
+      },
       scanTime: istNow,
       scanDate: istToday,
       scanCount: scanCount[0].count,
+      formattedTime: formattedTime,
+      formattedDate: formattedDate,
       timezone: 'IST (UTC+5:30)',
-      message: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${istNow.toLocaleTimeString()} (IST)`
+      message: formattedMessage,
+      // For toast notification (single line version)
+      toastMessage: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${formattedTime}`
     });
     
   } catch (error) {
@@ -485,7 +553,7 @@ app.listen(PORT, async () => {
   console.log('   - http://localhost:8080');
   console.log('   - http://localhost:8011');
   console.log('   - http://192.168.0.186:8080');
-  console.log('   - https://uat-photoassets.outlookindia.com');
+  console.log('   - https://face-ml-frontend.onrender.com');
   console.log('   - http://localhost:3000');
   console.log('   - http://localhost:3010');
   console.log('========================================\n');
