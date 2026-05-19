@@ -181,7 +181,14 @@ app.post('/api/admin/login', async (req, res) => {
 app.get('/api/test', async (req, res) => {
   try {
     const [result] = await pool.query('SELECT NOW() as time, DATABASE() as db, USER() as user');
-    res.json({ success: true, message: 'API Working!', info: result[0] });
+    const istNow = getISTDateTime();
+    res.json({ 
+      success: true, 
+      message: 'API Working!', 
+      serverTime: result[0],
+      istTime: istNow,
+      timezone: 'IST (UTC+5:30)'
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -258,68 +265,7 @@ app.post('/api/employees/:id/register-face', auth, upload.single('faceImage'), a
   }
 });
 
-// Face recognition for attendance - Each scan creates a new record today
 // Face recognition for attendance - Each scan creates a new record with IST timezone
-app.post('/api/attendance/recognize__OLD', async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const { faceDescriptor } = req.body;
-    if (!faceDescriptor) return res.status(400).json({ error: 'Face descriptor required' });
-    
-    const [employees] = await connection.query('SELECT * FROM tsk_employees WHERE face_descriptor IS NOT NULL AND is_active = 1');
-    
-    let matched = null;
-    let bestScore = 0;
-    
-    for (const emp of employees) {
-      const desc = JSON.parse(emp.face_descriptor);
-      let score = 0;
-      for (let i = 0; i < desc.length; i++) score += desc[i] * faceDescriptor[i];
-      if (score > 0.6 && score > bestScore) {
-        bestScore = score;
-        matched = emp;
-      }
-    }
-    
-    if (!matched) return res.status(404).json({ error: 'Face not recognized' });
-    
-    // Get current time in IST (UTC+5:30)
-    const istNow = getISTDateTime();
-    const istToday = getISTDateString();
-    
-    // console.log(`IST Time: ${istNow}`);
-    // console.log(`IST Date: ${istToday}`);
-    
-    // Insert new attendance record for each scan with IST time
-    await connection.query(
-      'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
-      [matched.employee_id, matched.name, istToday, istNow]
-    );
-    
-    // Get today's scan count for this employee
-    const [scanCount] = await connection.query(
-      'SELECT COUNT(*) as count FROM tsk_attendance WHERE employee_id = ? AND scan_date = ?',
-      [matched.employee_id, istToday]
-    );
-    
-    res.json({ 
-      success: true,
-      employee: matched,
-      scanTime: istNow,
-      scanDate: istToday,
-      scanCount: scanCount[0].count,
-      timezone: 'IST (UTC+5:30)',
-      message: `Hello ${matched.name}!<br>Scan successfully recorded at ${istNow.toLocaleTimeString()} (IST)<br>#${scanCount[0].count}`
-    });
-    
-  } catch (error) {
-    console.error('Recognition error:', error);
-    res.status(500).json({ error: error.message });
-  } finally {
-    connection.release();
-  }
-});
-
 app.post('/api/attendance/recognize', async (req, res) => {
   const connection = await pool.getConnection();
   try {
@@ -391,7 +337,6 @@ app.post('/api/attendance/recognize', async (req, res) => {
       formattedDate: formattedDate,
       timezone: 'IST (UTC+5:30)',
       message: formattedMessage,
-      // For toast notification (single line version)
       toastMessage: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${formattedTime}`
     });
     
@@ -442,7 +387,8 @@ app.get('/api/attendance', auth, async (req, res) => {
 app.get('/api/attendance/daily-summary', auth, async (req, res) => {
   try {
     const { date } = req.query;
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    // FIXED: Use IST date instead of UTC
+    const targetDate = date || getISTDateString();
     
     const [summary] = await pool.query(`
       SELECT 
@@ -463,12 +409,14 @@ app.get('/api/attendance/daily-summary', auth, async (req, res) => {
   }
 });
 
-// Dashboard stats
+// Dashboard stats - FIXED: Use IST date
 app.get('/api/dashboard/stats', auth, async (req, res) => {
   try {
     const [totalEmp] = await pool.query('SELECT COUNT(*) as total FROM tsk_employees WHERE is_active = 1');
     const [faceReg] = await pool.query('SELECT COUNT(*) as registered FROM tsk_employees WHERE face_descriptor IS NOT NULL');
-    const today = new Date().toISOString().split('T')[0];
+    
+    // FIXED: Use IST date instead of UTC
+    const today = getISTDateString();
     
     // Today's attendance (employees who have at least one scan today)
     const [todayAtt] = await pool.query(
@@ -482,10 +430,11 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
       [today]
     );
     
-    // Last 7 days attendance trend (unique employees per day)
+    // Last 7 days attendance trend (unique employees per day) - FIXED: Use IST dates
     const lastWeek = [];
+    const istNow = getISTDateTime();
     for (let i = 6; i >= 0; i--) {
-      const date = new Date();
+      const date = new Date(istNow);
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split('T')[0];
       
@@ -501,9 +450,12 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
       employeesWithFace: faceReg[0].registered,
       todayAttendance: todayAtt[0].count,
       todayTotalScans: totalScans[0].count,
-      lastWeek: lastWeek
+      lastWeek: lastWeek,
+      currentISTTime: getISTDateTime(),
+      timezone: 'IST (UTC+5:30)'
     });
   } catch (error) {
+    console.error('Dashboard stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -556,6 +508,9 @@ app.listen(PORT, async () => {
   console.log('   - https://face-ml-frontend.onrender.com');
   console.log('   - http://localhost:3000');
   console.log('   - http://localhost:3010');
+  console.log('========================================');
+  console.log('🕒 Timezone: IST (UTC+5:30)');
+  console.log(`🕒 Current IST Time: ${getISTDateTime()}`);
   console.log('========================================\n');
   
   const initialized = await initializeSystem();
