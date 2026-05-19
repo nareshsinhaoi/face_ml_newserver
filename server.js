@@ -59,7 +59,7 @@ async function initializeSystem() {
     console.log('🔄 Connecting to MySQL...');
     connection = await pool.getConnection();
     console.log('✅ MySQL Connected Successfully!');
-    
+
     // Create tables
     await connection.query(`
       CREATE TABLE IF NOT EXISTS tsk_admins (
@@ -109,7 +109,7 @@ async function initializeSystem() {
 
     // Create default admin if not exists
     const [admins] = await connection.query('SELECT * FROM tsk_admins WHERE email = ?', ['admin@modulelabs.in']);
-    
+
     if (admins.length === 0) {
       const hashedPassword = await bcrypt.hash('Admin@123', 10);
       await connection.query('INSERT INTO tsk_admins (email, password) VALUES (?, ?)', ['admin@modulelabs.in', hashedPassword]);
@@ -135,8 +135,8 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
-  storage, 
+const upload = multer({
+  storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
@@ -164,12 +164,12 @@ app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const [admins] = await pool.query('SELECT * FROM tsk_admins WHERE email = ?', [email]);
-    
+
     if (admins.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
-    
+
     const valid = await bcrypt.compare(password, admins[0].password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-    
+
     const token = jwt.sign({ id: admins[0].id, email }, 'modulelabs_secret_2024', { expiresIn: '24h' });
     res.json({ token, admin: { email } });
   } catch (error) {
@@ -182,9 +182,9 @@ app.get('/api/test', async (req, res) => {
   try {
     const [result] = await pool.query('SELECT NOW() as time, DATABASE() as db, USER() as user');
     const istNow = getISTDateTime();
-    res.json({ 
-      success: true, 
-      message: 'API Working!', 
+    res.json({
+      success: true,
+      message: 'API Working!',
       serverTime: result[0],
       istTime: istNow,
       timezone: 'IST (UTC+5:30)'
@@ -208,15 +208,15 @@ app.get('/api/employees', auth, async (req, res) => {
 app.post('/api/employees', auth, async (req, res) => {
   try {
     const { employeeId, name, email, position, department, phone } = req.body;
-    
+
     const [existing] = await pool.query('SELECT * FROM tsk_employees WHERE employee_id = ? OR email = ?', [employeeId, email]);
     if (existing.length > 0) return res.status(400).json({ error: 'Employee ID or email exists' });
-    
+
     const [result] = await pool.query(
       'INSERT INTO tsk_employees (employee_id, name, email, position, department, phone) VALUES (?, ?, ?, ?, ?, ?)',
       [employeeId, name, email, position, department, phone]
     );
-    
+
     const [newEmp] = await pool.query('SELECT * FROM tsk_employees WHERE id = ?', [result.insertId]);
     res.status(201).json(newEmp[0]);
   } catch (error) {
@@ -245,6 +245,69 @@ app.delete('/api/employees/:id', auth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// Get all employees with server-side pagination
+app.get('/api/employees/paginated', auth, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search = ''
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let whereClause = 'WHERE is_active = 1';
+    const params = [];
+
+    // Search filter
+    if (search) {
+      whereClause += ' AND (name LIKE ? OR employee_id LIKE ? OR email LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    // Get total count
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) as total FROM tsk_employees ${whereClause}`,
+      params
+    );
+    const totalRecords = countResult[0].total;
+
+    // Get paginated records
+    const [employees] = await pool.query(`
+      SELECT 
+        id,
+        employee_id,
+        name,
+        email,
+        position,
+        department,
+        phone,
+        face_image,
+        face_descriptor,
+        is_active,
+        created_at
+      FROM tsk_employees
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `, [...params, parseInt(limit), offset]);
+
+    res.json({
+      success: true,
+      data: employees,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalRecords / parseInt(limit)),
+        totalRecords: totalRecords,
+        recordsPerPage: parseInt(limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Pagination error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Register face
 app.post('/api/employees/:id/register-face', auth, upload.single('faceImage'), async (req, res) => {
@@ -252,13 +315,13 @@ app.post('/api/employees/:id/register-face', auth, upload.single('faceImage'), a
     const { faceDescriptor } = req.body;
     if (!req.file) return res.status(400).json({ error: 'Face image required' });
     if (!faceDescriptor) return res.status(400).json({ error: 'Face descriptor required' });
-    
+
     await pool.query('UPDATE tsk_employees SET face_image = ?, face_descriptor = ? WHERE id = ?', [
       `/uploads/faces/${req.file.filename}`,
       faceDescriptor,
       req.params.id
     ]);
-    
+
     res.json({ message: 'Face registered successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -271,12 +334,12 @@ app.post('/api/attendance/recognize', async (req, res) => {
   try {
     const { faceDescriptor } = req.body;
     if (!faceDescriptor) return res.status(400).json({ error: 'Face descriptor required' });
-    
+
     const [employees] = await connection.query('SELECT * FROM tsk_employees WHERE face_descriptor IS NOT NULL AND is_active = 1');
-    
+
     let matched = null;
     let bestScore = 0;
-    
+
     for (const emp of employees) {
       const desc = JSON.parse(emp.face_descriptor);
       let score = 0;
@@ -286,43 +349,43 @@ app.post('/api/attendance/recognize', async (req, res) => {
         matched = emp;
       }
     }
-    
+
     if (!matched) return res.status(404).json({ error: 'Face not recognized' });
-    
+
     // Get current time in IST (UTC+5:30)
     const istNow = getISTDateTime();
     const istToday = getISTDateString();
-    
+
     console.log(`IST Time: ${istNow}`);
     console.log(`IST Date: ${istToday}`);
-    
+
     // Insert new attendance record for each scan with IST time
     await connection.query(
       'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
       [matched.employee_id, matched.name, istToday, istNow]
     );
-    
+
     // Get today's scan count for this employee
     const [scanCount] = await connection.query(
       'SELECT COUNT(*) as count FROM tsk_attendance WHERE employee_id = ? AND scan_date = ?',
       [matched.employee_id, istToday]
     );
-    
+
     // Format the time for display (12-hour format with AM/PM)
-    const formattedTime = istNow.toLocaleTimeString('en-IN', { 
-      hour: '2-digit', 
-      minute: '2-digit', 
+    const formattedTime = istNow.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
       second: '2-digit',
-      hour12: true 
+      hour12: true
     });
-    
+
     // Format the date for display (DD-MM-YYYY)
     const formattedDate = istToday.split('-').reverse().join('-');
-    
+
     // Create formatted message with line breaks
     const formattedMessage = `✅ Hello ${matched.name}!\nYour scan has been recorded successfully.\n\n🕒 Time: ${formattedTime} (IST)\n📅 Date: ${formattedDate}\n🔢 Today's Scan Count: #${scanCount[0].count}`;
-    
-    res.json({ 
+
+    res.json({
       success: true,
       employee: {
         id: matched.id,
@@ -339,7 +402,7 @@ app.post('/api/attendance/recognize', async (req, res) => {
       message: formattedMessage,
       toastMessage: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${formattedTime}`
     });
-    
+
   } catch (error) {
     console.error('Recognition error:', error);
     res.status(500).json({ error: error.message });
@@ -364,7 +427,7 @@ app.get('/api/attendance', auth, async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
-    
+
     if (startDate && endDate) {
       query += ' AND a.scan_date BETWEEN ? AND ?';
       params.push(startDate, endDate);
@@ -373,12 +436,86 @@ app.get('/api/attendance', auth, async (req, res) => {
       query += ' AND a.employee_id = ?';
       params.push(employeeId);
     }
-    
+
     query += ' ORDER BY a.scan_date DESC, a.scan_time DESC';
-    
+
     const [records] = await pool.query(query, params);
     res.json(records);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get attendance records with server-side pagination
+app.get('/api/attendance/paginated', auth, async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      employeeId,
+      page = 1,
+      limit = 10,
+      search = ''
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let whereClause = 'WHERE 1=1';
+    const params = [];
+
+    // Date filter
+    if (startDate && endDate) {
+      whereClause += ' AND scan_date BETWEEN ? AND ?';
+      params.push(startDate, endDate);
+    }
+
+    // Employee filter
+    if (employeeId) {
+      whereClause += ' AND employee_id = ?';
+      params.push(employeeId);
+    }
+
+    // Search filter
+    if (search) {
+      whereClause += ' AND (employee_name LIKE ? OR employee_id LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    // Get total count
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) as total FROM tsk_attendance ${whereClause}`,
+      params
+    );
+    const totalRecords = countResult[0].total;
+
+    // Get paginated records (latest first)
+    const [records] = await pool.query(`
+      SELECT 
+        id,
+        employee_id,
+        employee_name,
+        scan_date,
+        scan_time,
+        DATE_FORMAT(scan_time, '%Y-%m-%d %h:%i %p') as formatted_time
+      FROM tsk_attendance
+      ${whereClause}
+      ORDER BY scan_time DESC
+      LIMIT ? OFFSET ?
+    `, [...params, parseInt(limit), offset]);
+
+    res.json({
+      success: true,
+      data: records,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalRecords / parseInt(limit)),
+        totalRecords: totalRecords,
+        recordsPerPage: parseInt(limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Pagination error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -389,7 +526,7 @@ app.get('/api/attendance/daily-summary', auth, async (req, res) => {
     const { date } = req.query;
     // FIXED: Use IST date instead of UTC
     const targetDate = date || getISTDateString();
-    
+
     const [summary] = await pool.query(`
       SELECT 
         employee_id,
@@ -402,7 +539,7 @@ app.get('/api/attendance/daily-summary', auth, async (req, res) => {
       GROUP BY employee_id, employee_name
       ORDER BY first_scan DESC
     `, [targetDate]);
-    
+
     res.json(summary);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -414,22 +551,22 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
   try {
     const [totalEmp] = await pool.query('SELECT COUNT(*) as total FROM tsk_employees WHERE is_active = 1');
     const [faceReg] = await pool.query('SELECT COUNT(*) as registered FROM tsk_employees WHERE face_descriptor IS NOT NULL');
-    
+
     // FIXED: Use IST date instead of UTC
     const today = getISTDateString();
-    
+
     // Today's attendance (employees who have at least one scan today)
     const [todayAtt] = await pool.query(
       'SELECT COUNT(DISTINCT employee_id) as count FROM tsk_attendance WHERE scan_date = ?',
       [today]
     );
-    
+
     // Today's total scans
     const [totalScans] = await pool.query(
       'SELECT COUNT(*) as count FROM tsk_attendance WHERE scan_date = ?',
       [today]
     );
-    
+
     // Last 7 days attendance trend (unique employees per day) - FIXED: Use IST dates
     const lastWeek = [];
     const istNow = getISTDateTime();
@@ -437,14 +574,14 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
       const date = new Date(istNow);
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split('T')[0];
-      
+
       const [countResult] = await pool.query(
         'SELECT COUNT(DISTINCT employee_id) as count FROM tsk_attendance WHERE scan_date = ?',
         [dateStr]
       );
       lastWeek.push({ date: dateStr, count: countResult[0].count });
     }
-    
+
     res.json({
       totalEmployees: totalEmp[0].total,
       employeesWithFace: faceReg[0].registered,
@@ -465,7 +602,7 @@ app.get('/api/attendance/employee/:employeeId', auth, async (req, res) => {
   try {
     const { employeeId } = req.params;
     const { startDate, endDate } = req.query;
-    
+
     let query = `
       SELECT 
         id,
@@ -476,14 +613,14 @@ app.get('/api/attendance/employee/:employeeId', auth, async (req, res) => {
       WHERE employee_id = ?
     `;
     const params = [employeeId];
-    
+
     if (startDate && endDate) {
       query += ' AND scan_date BETWEEN ? AND ?';
       params.push(startDate, endDate);
     }
-    
+
     query += ' ORDER BY scan_date DESC, scan_time DESC';
-    
+
     const [records] = await pool.query(query, params);
     res.json(records);
   } catch (error) {
@@ -512,9 +649,9 @@ app.listen(PORT, async () => {
   console.log('🕒 Timezone: IST (UTC+5:30)');
   console.log(`🕒 Current IST Time: ${getISTDateTime()}`);
   console.log('========================================\n');
-  
+
   const initialized = await initializeSystem();
-  
+
   if (initialized) {
     console.log('✨ Backend Ready!');
     console.log('🔐 Admin Login: POST http://localhost:5000/api/admin/login');
