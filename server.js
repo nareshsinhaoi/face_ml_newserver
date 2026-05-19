@@ -9,6 +9,23 @@ const fs = require('fs');
 
 const app = express();
 
+// Helper function to add 5.5 hours (IST offset)
+function getISTDate(date = new Date()) {
+  const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
+  const istDate = new Date(date.getTime() + istOffset);
+  return istDate;
+}
+
+function getISTDateString(date = new Date()) {
+  const istDate = getISTDate(date);
+  return istDate.toISOString().split('T')[0];
+}
+
+function getISTDateTime(date = new Date()) {
+  const istDate = getISTDate(date);
+  return istDate;
+}
+
 // Middleware - Updated CORS configuration
 app.use(cors({
   origin: ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:8011', "http://192.168.0.186:8080", 'https://face-ml-frontend.onrender.com', 'http://localhost:3000', 'http://localhost:3010'],
@@ -264,15 +281,28 @@ app.post('/api/attendance/recognize', async (req, res) => {
     }
     
     if (!matched) return res.status(404).json({ error: 'Face not recognized' });
+
+    // Get current time in IST (UTC+5:30)
+    const istNow = getISTDateTime();
+    const istToday = getISTDateString();
     
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
+    console.log(`IST Time: ${istNow}`);
+    console.log(`IST Date: ${istToday}`);
     
-    // Insert new attendance record for each scan
+    // Insert new attendance record for each scan with IST time
     await connection.query(
       'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
-      [matched.employee_id, matched.name, today, now]
+      [matched.employee_id, matched.name, istToday, istNow]
     );
+    
+    // const now = new Date();
+    // const today = now.toISOString().split('T')[0];
+    
+    // // Insert new attendance record for each scan
+    // await connection.query(
+    //   'INSERT INTO tsk_attendance (employee_id, employee_name, scan_date, scan_time) VALUES (?, ?, ?, ?)',
+    //   [matched.employee_id, matched.name, today, now]
+    // );
     
     // Get today's scan count for this employee
     const [scanCount] = await connection.query(
@@ -280,12 +310,21 @@ app.post('/api/attendance/recognize', async (req, res) => {
       [matched.employee_id, today]
     );
     
+    // res.json({ 
+    //   success: true,
+    //   employee: matched,
+    //   scanTime: now,
+    //   scanCount: scanCount[0].count,
+    //   message: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${now.toLocaleTimeString()}`
+    // });
     res.json({ 
       success: true,
       employee: matched,
-      scanTime: now,
+      scanTime: istNow,
+      scanDate: istToday,
       scanCount: scanCount[0].count,
-      message: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${now.toLocaleTimeString()}`
+      timezone: 'IST (UTC+5:30)',
+      message: `✅ Hello ${matched.name}! Scan #${scanCount[0].count} recorded at ${istNow.toLocaleTimeString()} (IST)`
     });
     
   } catch (error) {
